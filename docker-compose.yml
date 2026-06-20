@@ -1,0 +1,327 @@
+x-press-build: &press_build
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: ${IMAGE_NAME:-press-custom}:${VERSION:-latest}
+  pull_policy: never
+  deploy:
+    restart_policy:
+      condition: always
+
+x-press-image: &press_image
+  image: ${IMAGE_NAME:-press-custom}:${VERSION:-latest}
+  pull_policy: never
+  deploy:
+    restart_policy:
+      condition: always
+
+services:
+  press-backend:
+    <<: *press_build
+    volumes:
+      - press-sites:/home/frappe/frappe-bench/sites
+    networks:
+      - press-network
+    healthcheck:
+      test:
+        - CMD
+        - wait-for-it
+        - '0.0.0.0:8000'
+      interval: 2s
+      timeout: 10s
+      retries: 30
+
+  press-frontend:
+    <<: *press_image
+    ports:
+      - "${FRONTEND_PORT:-8082}:8080"
+    command:
+      - nginx-entrypoint.sh
+    depends_on:
+      press-backend:
+        condition: service_started
+        required: true
+      press-websocket:
+        condition: service_started
+        required: true
+    environment:
+      BACKEND: press-backend:8000
+      FRAPPE_SITE_NAME_HEADER: ${FRAPPE_SITE_NAME_HEADER:-$$host}
+      SOCKETIO: press-websocket:9000
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: "off"
+    volumes:
+      - press-sites:/home/frappe/frappe-bench/sites
+    networks:
+      - press-network
+    healthcheck:
+      test:
+        - CMD
+        - wait-for-it
+        - '0.0.0.0:8080'
+      interval: 2s
+      timeout: 30s
+      retries: 30
+
+  press-queue-default:
+    <<: *press_image
+    command: ["bench", "worker", "--queue", "default"]
+    volumes:
+      - press-sites:/home/frappe/frappe-bench/sites
+    networks:
+      - press-network
+    healthcheck:
+      test: ["CMD", "wait-for-it", "press-redis-queue:6379"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+    depends_on:
+      press-configurator:
+        condition: service_completed_successfully
+        required: true
+
+  press-queue-long:
+    <<: *press_image
+    command: ["bench", "worker", "--queue", "long"]
+    volumes:
+      - press-sites:/home/frappe/frappe-bench/sites
+    networks:
+      - press-network
+    healthcheck:
+      test: ["CMD", "wait-for-it", "press-redis-queue:6379"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+    depends_on:
+      press-configurator:
+        condition: service_completed_successfully
+        required: true
+
+  press-queue-short:
+    <<: *press_image
+    command: ["bench", "worker", "--queue", "short"]
+    volumes:
+      - press-sites:/home/frappe/frappe-bench/sites
+    networks:
+      - press-network
+    healthcheck:
+      test: ["CMD", "wait-for-it", "press-redis-queue:6379"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+    depends_on:
+      press-configurator:
+        condition: service_completed_successfully
+        required: true
+
+  press-scheduler:
+    <<: *press_image
+    command: ["bench", "schedule"]
+    healthcheck:
+      test: ["CMD", "wait-for-it", "press-redis-queue:6379"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+    depends_on:
+      press-configurator:
+        condition: service_completed_successfully
+        required: true
+    volumes:
+      - press-sites:/home/frappe/frappe-bench/sites
+    networks:
+      - press-network
+
+  press-websocket:
+    <<: *press_image
+    command: ["node", "/home/frappe/frappe-bench/apps/frappe/socketio.js"]
+    healthcheck:
+      test: ["CMD", "wait-for-it", "0.0.0.0:9000"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+    depends_on:
+      press-configurator:
+        condition: service_completed_successfully
+        required: true
+    volumes:
+      - press-sites:/home/frappe/frappe-bench/sites
+    networks:
+      - press-network
+
+  press-configurator:
+    <<: *press_image
+    deploy:
+      mode: replicated
+      replicas: ${CONFIGURE:-0}
+      restart_policy:
+        condition: none
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        [[ $${REGENERATE_APPS_TXT} == "1" ]] && ls -1 apps > sites/apps.txt;
+        [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty"` ]] && exit 0;
+        bench set-config -g db_host $${DB_HOST};
+        bench set-config -gp db_port $${DB_PORT};
+        bench set-config -g redis_cache "redis://$${REDIS_CACHE}";
+        bench set-config -g redis_queue "redis://$${REDIS_QUEUE}";
+        bench set-config -g redis_socketio "redis://$${REDIS_QUEUE}";
+        bench set-config -gp socketio_port $${SOCKETIO_PORT};
+    environment:
+      DB_HOST: "${DB_HOST:-press-db}"
+      DB_PORT: "3306"
+      REDIS_CACHE: press-redis-cache:6379
+      REDIS_QUEUE: press-redis-queue:6379
+      SOCKETIO_PORT: "9000"
+      REGENERATE_APPS_TXT: "${REGENERATE_APPS_TXT:-0}"
+    volumes:
+      - press-sites:/home/frappe/frappe-bench/sites
+    networks:
+      - press-network
+
+  press-create-site:
+    <<: *press_image
+    deploy:
+      mode: replicated
+      replicas: ${CREATE_SITE:-0}
+      restart_policy:
+        condition: none
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        wait-for-it -t 180 $${DB_HOST}:$${DB_PORT};
+        wait-for-it -t 180 press-redis-cache:6379;
+        wait-for-it -t 180 press-redis-queue:6379;
+        export start=`date +%s`;
+        until [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty"` ]] && \
+          [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_cache // empty"` ]] && \
+          [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_queue // empty"` ]];
+        do
+          echo "Waiting for sites/common_site_config.json to be created";
+          sleep 5;
+          if (( `date +%s`-start > 180 )); then
+            echo "could not find sites/common_site_config.json with required keys";
+            exit 1
+          fi
+        done;
+        echo "sites/common_site_config.json found";
+        [[ -d "sites/${SITE_NAME}" ]] && echo "${SITE_NAME} already exists" && exit 0;
+        bench new-site --mariadb-user-host-login-scope='%' \
+          --admin-password=$${ADMIN_PASSWORD} \
+          --db-root-username=root \
+          --db-root-password=$${DB_ROOT_PASSWORD} \
+          $${INSTALL_APP_ARGS} \
+          $${SITE_NAME};
+    volumes:
+      - press-sites:/home/frappe/frappe-bench/sites
+    environment:
+      SITE_NAME: ${SITE_NAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      DB_HOST: ${DB_HOST:-press-db}
+      DB_PORT: "${DB_PORT:-3306}"
+      DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      INSTALL_APP_ARGS: ${INSTALL_APP_ARGS}
+    networks:
+      - press-network
+
+  press-migration:
+    <<: *press_image
+    deploy:
+      mode: replicated
+      replicas: ${MIGRATE:-0}
+      restart_policy:
+        condition: none
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        if curl -f -H "Host: ${SITE_NAME}" http://press-frontend:8080/api/method/ping; then
+          bench --site all set-config -p maintenance_mode 1;
+          bench --site all set-config -p pause_scheduler 1;
+          bench --site all migrate;
+          bench --site all set-config -p maintenance_mode 0;
+          bench --site all set-config -p pause_scheduler 0;
+        else
+          echo "Site busy or unreachable, skipping migration";
+        fi
+    volumes:
+      - press-sites:/home/frappe/frappe-bench/sites
+    networks:
+      - press-network
+
+  press-db:
+    image: mariadb:10.6
+    deploy:
+      mode: replicated
+      replicas: ${ENABLE_DB:-0}
+      restart_policy:
+        condition: always
+    healthcheck:
+      test: mysqladmin ping -h localhost --password=${DB_ROOT_PASSWORD}
+      interval: 1s
+      retries: 20
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    volumes:
+      - press-db-data:/var/lib/mysql
+    networks:
+      - press-network
+
+  press-redis-cache:
+    image: redis:6.2-alpine
+    deploy:
+      restart_policy:
+        condition: always
+    volumes:
+      - press-redis-cache-data:/data
+    networks:
+      - press-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  press-redis-queue:
+    image: redis:6.2-alpine
+    deploy:
+      restart_policy:
+        condition: always
+    volumes:
+      - press-redis-queue-data:/data
+    networks:
+      - press-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  press-redis-socketio:
+    image: redis:6.2-alpine
+    deploy:
+      restart_policy:
+        condition: always
+    volumes:
+      - press-redis-socketio-data:/data
+    networks:
+      - press-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  press-db-data:
+  press-redis-cache-data:
+  press-redis-queue-data:
+  press-redis-socketio-data:
+  press-sites:
+
+networks:
+  press-network:
