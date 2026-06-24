@@ -46,8 +46,8 @@ RUN useradd -ms /bin/bash frappe \
     postgresql-client \
     wait-for-it \
     jq \
-    openssh-client \
     media-types \
+    openssh-client \
     && mkdir -p ${NVM_DIR} \
     && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash \
     && . ${NVM_DIR}/nvm.sh \
