@@ -7,19 +7,18 @@ x-press-build: &press_build
   deploy:
     restart_policy:
       condition: always
-
 x-press-image: &press_image
   image: ${IMAGE_NAME:-press-custom}:${VERSION:-latest}
   pull_policy: never
   deploy:
     restart_policy:
       condition: always
-
 services:
   press-backend:
     <<: *press_build
     volumes:
       - press-sites:/home/frappe/frappe-bench/sites
+      - press_ssh:/home/frappe/.ssh
     networks:
       - press-network
     healthcheck:
@@ -30,7 +29,6 @@ services:
       interval: 2s
       timeout: 10s
       retries: 30
-
   press-frontend:
     <<: *press_image
     ports:
@@ -63,7 +61,6 @@ services:
       interval: 2s
       timeout: 30s
       retries: 30
-
   press-queue-default:
     <<: *press_image
     command: ["bench", "worker", "--queue", "default"]
@@ -80,7 +77,6 @@ services:
       press-configurator:
         condition: service_completed_successfully
         required: true
-
   press-queue-long:
     <<: *press_image
     command: ["bench", "worker", "--queue", "long"]
@@ -97,7 +93,6 @@ services:
       press-configurator:
         condition: service_completed_successfully
         required: true
-
   press-queue-short:
     <<: *press_image
     command: ["bench", "worker", "--queue", "short"]
@@ -114,7 +109,6 @@ services:
       press-configurator:
         condition: service_completed_successfully
         required: true
-
   press-scheduler:
     <<: *press_image
     command: ["bench", "schedule"]
@@ -131,7 +125,6 @@ services:
       - press-sites:/home/frappe/frappe-bench/sites
     networks:
       - press-network
-
   press-websocket:
     <<: *press_image
     command: ["node", "/home/frappe/frappe-bench/apps/frappe/socketio.js"]
@@ -148,7 +141,6 @@ services:
       - press-sites:/home/frappe/frappe-bench/sites
     networks:
       - press-network
-
   press-configurator:
     <<: *press_image
     deploy:
@@ -178,7 +170,6 @@ services:
       - press-sites:/home/frappe/frappe-bench/sites
     networks:
       - press-network
-
   press-create-site:
     <<: *press_image
     deploy:
@@ -192,7 +183,7 @@ services:
         wait-for-it -t 180 $${DB_HOST}:$${DB_PORT};
         wait-for-it -t 180 press-redis-cache:6379;
         wait-for-it -t 180 press-redis-queue:6379;
-        export start=`date +%s`;
+        export start`date +%s`;
         until [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty"` ]] && \
           [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_cache // empty"` ]] && \
           [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_queue // empty"` ]];
@@ -223,7 +214,6 @@ services:
       INSTALL_APP_ARGS: ${INSTALL_APP_ARGS}
     networks:
       - press-network
-
   press-migration:
     <<: *press_image
     deploy:
@@ -247,7 +237,6 @@ services:
       - press-sites:/home/frappe/frappe-bench/sites
     networks:
       - press-network
-
   press-db:
     image: mariadb:10.6
     deploy:
@@ -270,7 +259,6 @@ services:
       - press-db-data:/var/lib/mysql
     networks:
       - press-network
-
   press-redis-cache:
     image: redis:6.2-alpine
     deploy:
@@ -285,7 +273,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 3
-
   press-redis-queue:
     image: redis:6.2-alpine
     deploy:
@@ -300,7 +287,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 3
-
   press-redis-socketio:
     image: redis:6.2-alpine
     deploy:
@@ -315,13 +301,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 3
-
 volumes:
   press-db-data:
   press-redis-cache-data:
   press-redis-queue-data:
   press-redis-socketio-data:
   press-sites:
-
+  press_ssh:
 networks:
   press-network:
