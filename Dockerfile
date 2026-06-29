@@ -133,6 +133,11 @@ RUN bench init \
 
 FROM base AS press
 
+# 信任 Cloudflare Origin CA 根证书
+# 为什么：Press 通过 HTTPS 调 Agent，Agent 用的是此证书，不加 SSL 验证失败
+ARG CF_ORIGIN_CA_URL=https://developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem
+RUN curl -sL ${CF_ORIGIN_CA_URL} >> $(python3 -c "import certifi; print(certifi.where())")
+
 USER frappe
 
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
